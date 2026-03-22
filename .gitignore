@@ -1,0 +1,15 @@
+.bsp
+.idea
+.metals
+.vscode
+*.iml
+target
+out
+spark-warehouse
+.DS_Store
+venv/
+__pycache__/
+*.pyc
+project/target
+derby.log
+metastore_db/
