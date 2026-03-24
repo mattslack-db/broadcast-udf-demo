@@ -1,0 +1,88 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          DIFF=$(git diff origin/${{ github.event.pull_request.base.ref }}...HEAD)
+          # Write diff to file to avoid shell escaping issues
+          echo "$DIFF" > /tmp/pr_diff.txt
+
+      - name: Claude Code Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(cat /tmp/pr_diff.txt)
+
+          # Truncate very large diffs to stay within token limits
+          DIFF=$(echo "$DIFF" | head -c 80000)
+
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "content-type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$(jq -n \
+              --arg diff "$DIFF" \
+              --arg pr_title "${{ github.event.pull_request.title }}" \
+              --arg pr_body "${{ github.event.pull_request.body }}" \
+              '{
+                model: "claude-sonnet-4-20250514",
+                max_tokens: 4096,
+                messages: [{
+                  role: "user",
+                  content: ("You are a code reviewer. Review this pull request and provide feedback in two sections.\n\nPR Title: " + $pr_title + "\nPR Description: " + $pr_body + "\n\nDiff:\n```\n" + $diff + "\n```\n\n## Instructions\n\nProvide your review in exactly this format:\n\n### Code Review\nReview the code changes for:\n- Bugs, logic errors, or edge cases\n- Code quality and readability\n- Performance concerns\n- Best practices\n\nBe concise. Only flag real issues, not style preferences.\n\n### Sensitive Information Check\nScan the diff carefully for ANY of the following that should NOT be in a public repo:\n- API keys, tokens, secrets, passwords (even if they look like placeholders)\n- Internal URLs, hostnames, or IP addresses (e.g. *.internal.*, 10.x.x.x, 192.168.x.x)\n- Email addresses or personal information\n- Database connection strings\n- Cloud account IDs, subscription IDs, or tenant IDs\n- Databricks workspace URLs or tokens\n- AWS/GCP/Azure credentials or resource ARNs\n- Private certificate or key material\n- Hardcoded environment-specific configuration\n\nIf nothing sensitive is found, say: No sensitive information detected.\nIf something is found, list each item with the file and line number.")
+                }]
+              }')")
+
+          # Extract the review text
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Error: Could not generate review. API response: \(.error.message // "unknown error")"')
+
+          echo "$REVIEW" > /tmp/review.md
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('/tmp/review.md', 'utf8');
+
+            // Find and delete previous bot comments to avoid clutter
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            for (const comment of comments.data) {
+              if (comment.body.startsWith('## Claude Code Review')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Claude Code Review\n\n${review}`,
+            });
