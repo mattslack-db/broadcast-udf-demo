@@ -13,3 +13,4 @@ __pycache__/
 project/target
 derby.log
 metastore_db/
+.isaac/
