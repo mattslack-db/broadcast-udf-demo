@@ -15,8 +15,11 @@ package org.example.demo {
 
   class BroadcastUDFRegistryScala extends BroadcastUDFRegistry with java.io.Serializable {
 
-    // This will contain one entry for every dataset that is loaded to the cache
-    private val datasets = mutable.Map[String, Seq[Row]]()
+    // This will contain one entry for every dataset that is loaded to the cache.
+    // @transient: only populated/read on the driver (initializeFromRows, updateBroadcast). Marking it
+    // transient prevents it being serialized into every UDF task closure (which would defeat the
+    // broadcast); executors read the data from broadcastDatasets instead.
+    @transient private val datasets = mutable.Map[String, Seq[Row]]()
 
     // This will contain one entry for every dataset that is loaded to the cache
     @volatile private var broadcastDatasets: Broadcast[mutable.Map[String, Seq[Row]]] = _
@@ -133,7 +136,7 @@ package org.example.demo {
     }
 
     private def reportCacheMetadata(): Seq[(String, Int, Option[Int], Option[String])] = {
-      datasets.toSeq.map { case (k, v) =>
+      broadcastDatasets.value.toSeq.map { case (k, v) =>
         (k, v.size,
           if (v.isEmpty) None else Some(v.head.size),
           if (v.isEmpty || v.head.schema == null) None else Some(v.head.schema.toDDL))
@@ -141,7 +144,7 @@ package org.example.demo {
     }
 
     private def getCaches: Seq[(String, Seq[String])] = {
-      datasets.toSeq.map { case (k, v) =>
+      broadcastDatasets.value.toSeq.map { case (k, v) =>
         (k, v.map { row => row.toString() })
       }
     }

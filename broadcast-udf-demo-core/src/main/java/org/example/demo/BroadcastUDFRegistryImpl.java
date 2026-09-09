@@ -30,8 +30,11 @@ import java.util.stream.Stream;
 
 public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
 
-    // This will contain one entry for every dataset that is loaded to the cache
-    private final Map<String, List<Row>> datasets = new ConcurrentHashMap<>();
+    // This will contain one entry for every dataset that is loaded to the cache.
+    // transient: this map is only populated/read on the driver (initializeFromRows, updateBroadcast).
+    // Marking it transient prevents it being serialized into every UDF task closure (which would
+    // defeat the broadcast); executors read the data from broadcastDatasets instead.
+    private final transient Map<String, List<Row>> datasets = new ConcurrentHashMap<>();
 
     // This will contain one entry for every dataset that is loaded to the cache
     private volatile Broadcast<Map<String, List<Row>>> broadcastDatasets;
@@ -167,7 +170,7 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
     }
 
     private List<Tuple4<String, Integer, Integer, String>> reportCacheMetadata() {
-        return datasets.entrySet().stream().map(entry -> {
+        return broadcastDatasets.value().entrySet().stream().map(entry -> {
             String key = entry.getKey();
             List<Row> value = entry.getValue();
             Integer size = value.size();
@@ -178,7 +181,7 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
     }
 
     private List<Tuple2<String, List<String>>> getCaches() {
-        return datasets.entrySet().stream().map(entry -> {
+        return broadcastDatasets.value().entrySet().stream().map(entry -> {
             String key = entry.getKey();
             List<String> value = entry.getValue().stream()
                     .map(Row::toString)
