@@ -192,6 +192,20 @@ package org.example.demo {
     }
 
     def cleanup(): Unit = {
+      // Reset the per-executor static cache so a later run reusing the same (long-lived)
+      // JVMs rebuilds it instead of serving this run's stale reference data. Best-effort:
+      // reset the driver copy directly, and ask executor partitions to clear their copies.
+      BroadcastUDFRegistryScala.referenceDataObject = null
+      try {
+        val spark = SparkSession.active
+        val parallelism = math.max(spark.sparkContext.defaultParallelism, 1)
+        spark.range(parallelism).repartition(parallelism).foreachPartition((_: Iterator[java.lang.Long]) => {
+          BroadcastUDFRegistryScala.referenceDataObject = null
+        })
+      } catch {
+        case _: Throwable => // no active session - the driver reset above suffices
+      }
+
       if (broadcastDatasets != null) {
         broadcastDatasets.unpersist()
       }

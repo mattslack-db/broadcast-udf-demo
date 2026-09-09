@@ -2,6 +2,7 @@ package org.example.demo;
 
 import org.example.*;
 import org.apache.spark.TaskContext;
+import org.apache.spark.api.java.function.ForeachPartitionFunction;
 import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -261,6 +262,19 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
 
     @Override
     public void cleanup() {
+        // Reset the per-executor static cache so a later run reusing the same (long-lived)
+        // JVMs rebuilds it instead of serving this run's stale reference data. Best-effort:
+        // reset the driver copy directly, and ask executor partitions to clear their copies.
+        staticReferenceDataObject = null;
+        try {
+            SparkSession spark = SparkSession.active();
+            int parallelism = Math.max(spark.sparkContext().defaultParallelism(), 1);
+            spark.range(parallelism).repartition(parallelism).foreachPartition(
+                    (ForeachPartitionFunction<Long>) iter -> staticReferenceDataObject = null);
+        } catch (Throwable ignored) {
+            // No active session / not running distributed - the driver reset above suffices.
+        }
+
         if (broadcastDatasets != null) {
             broadcastDatasets.unpersist();
         }
