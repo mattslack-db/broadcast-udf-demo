@@ -58,9 +58,10 @@ else:
 def initialize_dataset(dataset, lookup):
     udfRegistry.initializeFromRows(dataset, spark.sql(lookup["sql"]).collect(), lookup.get("ddl"))
 
-# Run initializations in parallel
+# Run initializations in parallel. Wrap in list(...) so the lazy map is fully consumed and
+# any exception raised inside initialize_dataset is propagated instead of silently swallowed.
 with ThreadPoolExecutor() as executor:
-    executor.map(lambda item: initialize_dataset(item[0], item[1]), lookups.items())
+    list(executor.map(lambda item: initialize_dataset(item[0], item[1]), lookups.items()))
 
 #udfRegistry.initializeFromRows("dataset_1", lookupDf1.collect())
 #udfRegistry.initializeFromRows("dataset_2", lookupDf2.collect(), lookupDf2._jdf.schema().toDDL())
