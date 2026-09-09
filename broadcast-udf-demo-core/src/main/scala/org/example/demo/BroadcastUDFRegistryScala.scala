@@ -106,7 +106,7 @@ package org.example.demo {
           input.getAs[Timestamp]("startTimestamp").before(row.getAs[Timestamp]("timestampCol")) &&
             input.getAs[Timestamp]("endTimestamp").after(row.getAs[Timestamp]("timestampCol")))
         .map(row => Row.apply(row.getAs[Int]("intCol"), row.getAs[String]("strCol")))
-        .getOrElse(Row.apply(None, None))
+        .getOrElse(Row.apply(null, null))
     }
 
     /*
