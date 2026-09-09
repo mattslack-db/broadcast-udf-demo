@@ -2,6 +2,7 @@ package org.example.demo;
 
 import org.example.*;
 import org.apache.spark.TaskContext;
+import org.apache.spark.api.java.function.ForeachPartitionFunction;
 import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -30,8 +31,11 @@ import java.util.stream.Stream;
 
 public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
 
-    // This will contain one entry for every dataset that is loaded to the cache
-    private final Map<String, List<Row>> datasets = new ConcurrentHashMap<>();
+    // This will contain one entry for every dataset that is loaded to the cache.
+    // transient: this map is only populated/read on the driver (initializeFromRows, updateBroadcast).
+    // Marking it transient prevents it being serialized into every UDF task closure (which would
+    // defeat the broadcast); executors read the data from broadcastDatasets instead.
+    private final transient Map<String, List<Row>> datasets = new ConcurrentHashMap<>();
 
     // This will contain one entry for every dataset that is loaded to the cache
     private volatile Broadcast<Map<String, List<Row>>> broadcastDatasets;
@@ -89,9 +93,9 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
             throw new RuntimeException("dataset2 not defined");
         }
 
-        if (referenceDataObject.getDataset3() == null) {
-            throw new RuntimeException("dataset3 not defined");
-        }
+        // Note: this method only reads dataset1 and dataset2, so there is deliberately no
+        // dataset3 precondition here (the previous check rejected valid inputs and diverged
+        // from the Scala implementation, which has no such guard).
 
         Stream<AnExampleClass1> stream1 = referenceDataObject.getDataset1().stream();
         Stream<AnExampleClass2> stream2 = referenceDataObject.getDataset2().stream();
@@ -147,10 +151,16 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
             x = input.getAs(2);
         }
 
-        inputObject.setInputCol1(input.getAs("intCol"));
+        // Guard the columns that feed primitive setters (intCol -> long, decimalCol -> double)
+        // so a null value yields a default instead of an NPE, consistent with doubleCol above.
+        // strCol and timestampCol feed object setters, so null is already safe there.
+        long intVal = input.isNullAt(input.fieldIndex("intCol")) ? 0L : ((Number) input.getAs("intCol")).longValue();
+        double decimalVal = input.isNullAt(input.fieldIndex("decimalCol")) ? 0.0 : ((BigDecimal) input.getAs("decimalCol")).doubleValue();
+
+        inputObject.setInputCol1(intVal);
         inputObject.setInputCol2(input.getAs("strCol"));
         inputObject.setInputCol3(x);
-        inputObject.setInputCol4(((BigDecimal) input.getAs("decimalCol")).doubleValue());
+        inputObject.setInputCol4(decimalVal);
         inputObject.setInputCol5(input.getAs("timestampCol"));
         // In practice there would be more fields like this
 
@@ -167,7 +177,7 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
     }
 
     private List<Tuple4<String, Integer, Integer, String>> reportCacheMetadata() {
-        return datasets.entrySet().stream().map(entry -> {
+        return broadcastDatasets.value().entrySet().stream().map(entry -> {
             String key = entry.getKey();
             List<Row> value = entry.getValue();
             Integer size = value.size();
@@ -178,7 +188,7 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
     }
 
     private List<Tuple2<String, List<String>>> getCaches() {
-        return datasets.entrySet().stream().map(entry -> {
+        return broadcastDatasets.value().entrySet().stream().map(entry -> {
             String key = entry.getKey();
             List<String> value = entry.getValue().stream()
                     .map(Row::toString)
@@ -258,6 +268,19 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
 
     @Override
     public void cleanup() {
+        // Reset the per-executor static cache so a later run reusing the same (long-lived)
+        // JVMs rebuilds it instead of serving this run's stale reference data. Best-effort:
+        // reset the driver copy directly, and ask executor partitions to clear their copies.
+        staticReferenceDataObject = null;
+        try {
+            SparkSession spark = SparkSession.active();
+            int parallelism = Math.max(spark.sparkContext().defaultParallelism(), 1);
+            spark.range(parallelism).repartition(parallelism).foreachPartition(
+                    (ForeachPartitionFunction<Long>) iter -> staticReferenceDataObject = null);
+        } catch (Throwable ignored) {
+            // No active session / not running distributed - the driver reset above suffices.
+        }
+
         if (broadcastDatasets != null) {
             broadcastDatasets.unpersist();
         }

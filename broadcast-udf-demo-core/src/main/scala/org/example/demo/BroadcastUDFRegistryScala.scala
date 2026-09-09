@@ -11,12 +11,16 @@ package org.example.demo {
   import java.sql.Timestamp
   import scala.jdk.CollectionConverters._
   import scala.collection.mutable
+  import scala.collection.concurrent.TrieMap
   import scala.reflect.{ClassTag, classTag}
 
   class BroadcastUDFRegistryScala extends BroadcastUDFRegistry with java.io.Serializable {
 
-    // This will contain one entry for every dataset that is loaded to the cache
-    private val datasets = mutable.Map[String, Seq[Row]]()
+    // This will contain one entry for every dataset that is loaded to the cache.
+    // @transient: only populated/read on the driver (initializeFromRows, updateBroadcast). Marking it
+    // transient prevents it being serialized into every UDF task closure (which would defeat the
+    // broadcast); executors read the data from broadcastDatasets instead.
+    @transient private val datasets: mutable.Map[String, Seq[Row]] = TrieMap[String, Seq[Row]]()
 
     // This will contain one entry for every dataset that is loaded to the cache
     @volatile private var broadcastDatasets: Broadcast[mutable.Map[String, Seq[Row]]] = _
@@ -60,9 +64,17 @@ package org.example.demo {
      * First check that the cache is built, then run the calculator using the cache and return the results as a Tuple
      */
     private def calculateWithFieldsToTuple(lookupDataset1: String, lookupDataset2: Int): (String, Option[String], Int) = {
-      val retval1 = BroadcastUDFRegistryScala.referenceDataObject.getDataset1.asScala.find(row => row.getCol1 == lookupDataset1).map(_.getCol2).getOrElse("NOT_FOUND")
-      val retval2 = BroadcastUDFRegistryScala.referenceDataObject.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2).map(_.getCol2)
-      val retval3 = BroadcastUDFRegistryScala.referenceDataObject.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2).map(_.getCol3).getOrElse(-1)
+      val ref = BroadcastUDFRegistryScala.referenceDataObject
+
+      if (ref.getDataset1 == null) throw new RuntimeException("dataset1 not defined")
+      if (ref.getDataset2 == null) throw new RuntimeException("dataset2 not defined")
+
+      val retval1 = ref.getDataset1.asScala.find(row => row.getCol1 == lookupDataset1).map(_.getCol2).getOrElse("NOT_FOUND")
+
+      // Look up dataset2 once and reuse the match for both output fields
+      val dataset2Match = ref.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2)
+      val retval2 = dataset2Match.map(_.getCol2)
+      val retval3 = dataset2Match.map(_.getCol3).getOrElse(-1)
 
       (retval1, retval2, retval3)
     }
@@ -94,7 +106,7 @@ package org.example.demo {
           input.getAs[Timestamp]("startTimestamp").before(row.getAs[Timestamp]("timestampCol")) &&
             input.getAs[Timestamp]("endTimestamp").after(row.getAs[Timestamp]("timestampCol")))
         .map(row => Row.apply(row.getAs[Int]("intCol"), row.getAs[String]("strCol")))
-        .getOrElse(Row.apply(None, None))
+        .getOrElse(Row.apply(null, null))
     }
 
     /*
@@ -133,7 +145,7 @@ package org.example.demo {
     }
 
     private def reportCacheMetadata(): Seq[(String, Int, Option[Int], Option[String])] = {
-      datasets.toSeq.map { case (k, v) =>
+      broadcastDatasets.value.toSeq.map { case (k, v) =>
         (k, v.size,
           if (v.isEmpty) None else Some(v.head.size),
           if (v.isEmpty || v.head.schema == null) None else Some(v.head.schema.toDDL))
@@ -141,7 +153,7 @@ package org.example.demo {
     }
 
     private def getCaches: Seq[(String, Seq[String])] = {
-      datasets.toSeq.map { case (k, v) =>
+      broadcastDatasets.value.toSeq.map { case (k, v) =>
         (k, v.map { row => row.toString() })
       }
     }
@@ -188,6 +200,20 @@ package org.example.demo {
     }
 
     def cleanup(): Unit = {
+      // Reset the per-executor static cache so a later run reusing the same (long-lived)
+      // JVMs rebuilds it instead of serving this run's stale reference data. Best-effort:
+      // reset the driver copy directly, and ask executor partitions to clear their copies.
+      BroadcastUDFRegistryScala.referenceDataObject = null
+      try {
+        val spark = SparkSession.active
+        val parallelism = math.max(spark.sparkContext.defaultParallelism, 1)
+        spark.range(parallelism).repartition(parallelism).foreachPartition((_: Iterator[java.lang.Long]) => {
+          BroadcastUDFRegistryScala.referenceDataObject = null
+        })
+      } catch {
+        case _: Throwable => // no active session - the driver reset above suffices
+      }
+
       if (broadcastDatasets != null) {
         broadcastDatasets.unpersist()
       }
@@ -199,7 +225,7 @@ package org.example.demo {
      * This is the variable that points to the cache which means that it is shared between tasks on the same
      * executor. In practice AnExampleCache would be replaced by the application-specific cache name
      */
-    private var referenceDataObject: ReferenceDataInput = _
+    @volatile private var referenceDataObject: ReferenceDataInput = _
 
     /**
      * Populate the list of Java objects for this cache dataset
