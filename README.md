@@ -104,22 +104,26 @@ chosen implementation (`--mode JAVA` or `--mode SCALA`), and asserts the results
 ## Run on a Databricks classic cluster
 
 The thin JAR runs on a Databricks classic (all-purpose) cluster whose runtime matches the build
-(**DBR with Spark 4.1 / Scala 2.13**, e.g. a `*-scala2.13` 18.x runtime).
+(**DBR with Spark 4.1 / Scala 2.13**, e.g. a `*-scala2.13` 18.x runtime). The cluster must use a
+**Unity Catalog access mode** (e.g. single-user) — legacy no-isolation clusters cannot install
+libraries from Volumes.
 
-1. **Build** the thin JAR (see above).
-2. **Upload** it to a Unity Catalog **Volume**:
-   ```bash
-   databricks fs cp target/broadcast-udf-demo-core-<version>.jar \
-     dbfs:/Volumes/<catalog>/<schema>/<volume>/ --overwrite --profile <profile>
-   ```
-3. **Install** it as a cluster library (JAR, pointing at the Volume path). The cluster must use a
-   **Unity Catalog access mode** (e.g. single-user) — legacy no-isolation clusters cannot install
-   libraries from Volumes.
-4. Set the Spark config `spark.sql.legacy.allowUntypedScalaUDF=true` on the cluster (needed for the
-   Scala UDFs).
-5. **Run** the `python-tests.py` logic in a notebook/job on that cluster (using the existing
-   `spark` session and `spark._jvm.org.example.demo.BroadcastUDFRegistryImpl` /
-   `...BroadcastUDFRegistryScala`).
+Use the provided scripts (from `broadcast-udf-demo-pyspark/`). They build the thin JAR, stage it
+to a UC Volume, install it as a cluster library, and run the (unmodified) `python-tests.py` on the
+cluster via the Databricks command execution API:
+
+```bash
+export DATABRICKS_PROFILE=<profile>            # a configured Databricks CLI profile
+export DATABRICKS_CLUSTER_ID=<cluster-id>      # an existing UC single-user classic cluster
+export VOLUME_DIR=/Volumes/<catalog>/<schema>/<volume>   # where to stage the JAR
+
+./run-pyspark-databricks-java.sh               # exercise the Java implementation
+./run-pyspark-databricks-scala.sh              # exercise the Scala implementation
+```
+
+Both delegate to `run-pyspark-databricks.sh <JAVA|SCALA>`; set `SKIP_BUILD=1` to reuse an
+already-built JAR. The Scala UDFs need `spark.sql.legacy.allowUntypedScalaUDF=true`, which
+`python-tests.py` sets at runtime.
 
 > Because a classic cluster only loads a JAR's classes when the JVM starts, **restart the cluster**
 > after replacing the JAR so the new bytes are picked up.
