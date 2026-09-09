@@ -11,6 +11,7 @@ package org.example.demo {
   import java.sql.Timestamp
   import scala.jdk.CollectionConverters._
   import scala.collection.mutable
+  import scala.collection.concurrent.TrieMap
   import scala.reflect.{ClassTag, classTag}
 
   class BroadcastUDFRegistryScala extends BroadcastUDFRegistry with java.io.Serializable {
@@ -19,7 +20,7 @@ package org.example.demo {
     // @transient: only populated/read on the driver (initializeFromRows, updateBroadcast). Marking it
     // transient prevents it being serialized into every UDF task closure (which would defeat the
     // broadcast); executors read the data from broadcastDatasets instead.
-    @transient private val datasets = mutable.Map[String, Seq[Row]]()
+    @transient private val datasets: mutable.Map[String, Seq[Row]] = TrieMap[String, Seq[Row]]()
 
     // This will contain one entry for every dataset that is loaded to the cache
     @volatile private var broadcastDatasets: Broadcast[mutable.Map[String, Seq[Row]]] = _
