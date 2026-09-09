@@ -202,7 +202,7 @@ package org.example.demo {
      * This is the variable that points to the cache which means that it is shared between tasks on the same
      * executor. In practice AnExampleCache would be replaced by the application-specific cache name
      */
-    private var referenceDataObject: ReferenceDataInput = _
+    @volatile private var referenceDataObject: ReferenceDataInput = _
 
     /**
      * Populate the list of Java objects for this cache dataset
