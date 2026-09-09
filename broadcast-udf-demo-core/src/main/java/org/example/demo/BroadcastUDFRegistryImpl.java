@@ -151,10 +151,16 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
             x = input.getAs(2);
         }
 
-        inputObject.setInputCol1(input.getAs("intCol"));
+        // Guard the columns that feed primitive setters (intCol -> long, decimalCol -> double)
+        // so a null value yields a default instead of an NPE, consistent with doubleCol above.
+        // strCol and timestampCol feed object setters, so null is already safe there.
+        long intVal = input.isNullAt(input.fieldIndex("intCol")) ? 0L : ((Number) input.getAs("intCol")).longValue();
+        double decimalVal = input.isNullAt(input.fieldIndex("decimalCol")) ? 0.0 : ((BigDecimal) input.getAs("decimalCol")).doubleValue();
+
+        inputObject.setInputCol1(intVal);
         inputObject.setInputCol2(input.getAs("strCol"));
         inputObject.setInputCol3(x);
-        inputObject.setInputCol4(((BigDecimal) input.getAs("decimalCol")).doubleValue());
+        inputObject.setInputCol4(decimalVal);
         inputObject.setInputCol5(input.getAs("timestampCol"));
         // In practice there would be more fields like this
 
