@@ -64,9 +64,17 @@ package org.example.demo {
      * First check that the cache is built, then run the calculator using the cache and return the results as a Tuple
      */
     private def calculateWithFieldsToTuple(lookupDataset1: String, lookupDataset2: Int): (String, Option[String], Int) = {
-      val retval1 = BroadcastUDFRegistryScala.referenceDataObject.getDataset1.asScala.find(row => row.getCol1 == lookupDataset1).map(_.getCol2).getOrElse("NOT_FOUND")
-      val retval2 = BroadcastUDFRegistryScala.referenceDataObject.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2).map(_.getCol2)
-      val retval3 = BroadcastUDFRegistryScala.referenceDataObject.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2).map(_.getCol3).getOrElse(-1)
+      val ref = BroadcastUDFRegistryScala.referenceDataObject
+
+      if (ref.getDataset1 == null) throw new RuntimeException("dataset1 not defined")
+      if (ref.getDataset2 == null) throw new RuntimeException("dataset2 not defined")
+
+      val retval1 = ref.getDataset1.asScala.find(row => row.getCol1 == lookupDataset1).map(_.getCol2).getOrElse("NOT_FOUND")
+
+      // Look up dataset2 once and reuse the match for both output fields
+      val dataset2Match = ref.getDataset2.asScala.find(row => row.getCol1 == lookupDataset2)
+      val retval2 = dataset2Match.map(_.getCol2)
+      val retval3 = dataset2Match.map(_.getCol3).getOrElse(-1)
 
       (retval1, retval2, retval3)
     }
