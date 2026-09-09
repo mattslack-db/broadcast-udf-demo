@@ -93,9 +93,9 @@ public class BroadcastUDFRegistryImpl extends BroadcastUDFRegistry {
             throw new RuntimeException("dataset2 not defined");
         }
 
-        if (referenceDataObject.getDataset3() == null) {
-            throw new RuntimeException("dataset3 not defined");
-        }
+        // Note: this method only reads dataset1 and dataset2, so there is deliberately no
+        // dataset3 precondition here (the previous check rejected valid inputs and diverged
+        // from the Scala implementation, which has no such guard).
 
         Stream<AnExampleClass1> stream1 = referenceDataObject.getDataset1().stream();
         Stream<AnExampleClass2> stream2 = referenceDataObject.getDataset2().stream();
